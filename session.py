@@ -1,5 +1,4 @@
 import streamlit as st
-import setup
 
 
 def setup_session():

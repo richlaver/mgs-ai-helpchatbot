@@ -1,11 +1,9 @@
 import os
 import streamlit as st
-import json
 import database
 import rag
 from langchain_openai import ChatOpenAI
 from langchain_google_vertexai import VertexAIEmbeddings
-from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
