@@ -1,0 +1,35 @@
+import setup
+import session
+import rag
+import ui
+import streamlit as st
+
+st.title('MissionHelp Demo')
+
+session.setup_session() # Set-up session_state variables
+
+if not st.session_state.graph:
+    setup.set_google_credentials()
+    st.session_state.llm = setup.get_llm()
+    st.session_state.embeddings = setup.get_embeddings()
+
+    if not setup.collection_exists():
+        setup.create_collection() # Set-up Qdrant collection
+
+    if not setup.vectors_exist():
+        setup.rebuild_database()
+        
+    st.session_state.graph = rag.build_graph(
+        llm=st.session_state.llm,
+        vector_store=st.session_state.vector_store
+    )
+
+setup.display_setup()
+
+if st.session_state.graph:
+    st.session_state.status.update(
+        label='Set-up complete!',
+        state='complete',
+        expanded=False
+    )
+    ui.render_chatbot()
