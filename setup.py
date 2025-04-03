@@ -27,7 +27,7 @@ def install_playwright_browsers():
     # Check if browsers are already installed
     playwright_dir = os.path.expanduser("~/.cache/ms-playwright")
     if not os.path.exists(playwright_dir) or not os.listdir(playwright_dir):
-        st.session_state.status(":material/comedy-mask: Installing Playwright browsers...")
+        st.session_state.status.write(":material/comedy-mask: Installing Playwright browsers...")
         try:
             # Run the install command
             subprocess.run(["playwright", "install"], check=True)
