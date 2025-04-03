@@ -16,9 +16,6 @@ def setup_session():
     if 'vector_store' not in st.session_state:
         st.session_state.vector_store = False
 
-    if 'database_created' not in st.session_state:
-        st.session_state.database_created = False
-
     if 'graph' not in st.session_state:
         st.session_state.graph = False
 

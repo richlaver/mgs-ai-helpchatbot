@@ -20,6 +20,9 @@ if not st.session_state.graph:
 
     if not setup.points_exist():
         setup.rebuild_database()
+
+    if not st.session_state.vector_store:
+        st.session_state.vector_store = setup.get_vector_store(embeddings=st.session_state.embeddings)
         
     st.session_state.graph = rag.build_graph(
         llm=st.session_state.llm,
