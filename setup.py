@@ -102,12 +102,12 @@ def collection_exists():
 def points_exist():
     client = qdrant_info['client']
     collection_info = client.get_collection(qdrant_info['collection_name'])
-    point_count = collection_info.vectors_count
+    point_count = collection_info.points_count
 
     st.write('collection_info: ')
     st.write(collection_info)
 
-    st.write('vector_count:')
+    st.write('point_count:')
     st.write(point_count)
 
     return point_count is not None and point_count > 0
