@@ -27,3 +27,6 @@ def setup_session():
     
     if "messages" not in st.session_state:
         st.session_state.messages = []
+
+    if "webpage_urls" not in st.session_state:
+        st.session_state.webpage_urls = []

@@ -1,15 +1,36 @@
 from bs4 import BeautifulSoup
 import streamlit as st
+import pandas as pd
 from langchain_text_splitters import HTMLSemanticPreservingSplitter
 from langchain_community.document_loaders import AsyncChromiumLoader
 
 
-def web_scrape(web_paths):
-    st.session_state.status.write(':material/web: Scraping webpages...')
-    loader = AsyncChromiumLoader(urls=web_paths)
+def generate_webpaths():
+    id_filename = 'WUM articles.csv'
+    base_url = 'https://www.maxwellgeosystems.com/manuals/demo-manual/manual-web-content-highlight.php?manual_id='
+
+    ids = pd.read_csv(
+        filepath_or_buffer=id_filename,
+        usecols=[0],
+        skip_blank_lines=True
+    ).dropna().iloc[:, 0].astype(int).to_list()
+
+    webpaths = [base_url + str(id) for id in ids]
+    return webpaths
+
+
+def web_scrape():
+    webpaths = generate_webpaths()
+
+    st.session_state.status.write(':material/hourglass_top: Loading webpages...')
+    loader = AsyncChromiumLoader(urls=webpaths)
     docs = loader.load()
 
+    st.session_state.status.write(':material/web: Scraping webpages...')
     img_id = 0
+    with st.session_state.status:
+        web_scrape_progress = st.progress(value=0)
+    doc_num = 0
     for doc in docs:
         soup = BeautifulSoup(doc.page_content, "html.parser")
         div_print = soup.find("div", id="div_print")
@@ -38,7 +59,8 @@ def web_scrape(web_paths):
             # print("No <div id='div_print'> found")
             doc.page_content = ""
 
-        # st.write('Successfully web-scraped ' + doc.metadata['source'])
+        doc_num += 1
+        web_scrape_progress.progress(value=doc_num/len(docs))
 
     return docs
 

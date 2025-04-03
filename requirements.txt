@@ -10,3 +10,4 @@ langchain_google_vertexai
 langchain_qdrant
 qdrant_client
 playwright
+pandas

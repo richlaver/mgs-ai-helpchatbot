@@ -123,7 +123,7 @@ def rebuild_database():
     create_collection()
 
     st.session_state.vector_store = get_vector_store(embeddings=st.session_state.embeddings)
-    docs = database.web_scrape(web_paths=web_paths)
+    docs = database.web_scrape()
     all_splits = database.chunk_text(docs=docs)
     database.index_chunks(all_splits=all_splits, vector_store=st.session_state.vector_store)
 
