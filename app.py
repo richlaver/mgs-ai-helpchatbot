@@ -3,12 +3,9 @@ import session
 import rag
 import ui
 import streamlit as st
-import subprocess
-import os
+import playwright_install
 
-# Install Playwright browsers if not already installed
-if not os.path.exists(os.path.expanduser("~/.cache/ms-playwright")):
-    subprocess.run(["./script.sh"], check=True)
+playwright_install.install_playwright_browsers()
 
 st.title('MissionHelp Demo')
 
