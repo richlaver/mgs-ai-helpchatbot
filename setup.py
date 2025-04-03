@@ -1,4 +1,5 @@
 import os
+import subprocess
 import streamlit as st
 import database
 import rag
@@ -19,6 +20,23 @@ qdrant_info = {
     'client': QdrantClient(**st.secrets.qdrant_client_credentials),
     'collection_name': 'manual-text'
 }
+
+
+# Function to ensure Playwright browsers are installed
+def install_playwright_browsers():
+    # Check if browsers are already installed
+    playwright_dir = os.path.expanduser("~/.cache/ms-playwright")
+    if not os.path.exists(playwright_dir) or not os.listdir(playwright_dir):
+        st.session_state.status(":material/comedy-mask: Installing Playwright browsers...")
+        try:
+            # Run the install command
+            subprocess.run(["playwright", "install"], check=True)
+        except subprocess.CalledProcessError as e:
+            pass
+            # st.error(f"Failed to install Playwright browsers: {e}")
+    else:
+        pass
+        # st.write("Playwright browsers already installed.")
 
 
 def get_llm():
@@ -85,6 +103,12 @@ def vectors_exist():
     client = qdrant_info['client']
     collection_info = client.get_collection(qdrant_info['collection_name'])
     vector_count = collection_info.vectors_count
+
+    st.write('collection_info: ')
+    st.write(collection_info)
+
+    st.write('vector_count:')
+    st.write(vector_count)
 
     return vector_count is not None and vector_count > 0
 

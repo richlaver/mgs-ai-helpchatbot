@@ -3,13 +3,12 @@ import session
 import rag
 import ui
 import streamlit as st
-import playwright_install
-
-playwright_install.install_playwright_browsers()
 
 st.title('MissionHelp Demo')
 
 session.setup_session() # Set-up session_state variables
+
+setup.install_playwright_browsers()
 
 if not st.session_state.graph:
     setup.set_google_credentials()
