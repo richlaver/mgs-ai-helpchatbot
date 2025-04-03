@@ -18,7 +18,7 @@ if not st.session_state.graph:
     if not setup.collection_exists():
         setup.create_collection() # Set-up Qdrant collection
 
-    if not setup.vectors_exist():
+    if not setup.points_exist():
         setup.rebuild_database()
         
     st.session_state.graph = rag.build_graph(

@@ -27,7 +27,7 @@ def install_playwright_browsers():
     # Check if browsers are already installed
     playwright_dir = os.path.expanduser("~/.cache/ms-playwright")
     if not os.path.exists(playwright_dir) or not os.listdir(playwright_dir):
-        st.session_state.status.write(":material/comedy-mask: Installing Playwright browsers...")
+        st.session_state.status.write(":material/comedy_mask: Installing Playwright browsers...")
         try:
             # Run the install command
             subprocess.run(["playwright", "install"], check=True)
@@ -99,18 +99,18 @@ def collection_exists():
     return any(col.name == qdrant_info['collection_name'] for col in existing_collections.collections)
 
 
-def vectors_exist():
+def points_exist():
     client = qdrant_info['client']
     collection_info = client.get_collection(qdrant_info['collection_name'])
-    vector_count = collection_info.vectors_count
+    point_count = collection_info.vectors_count
 
     st.write('collection_info: ')
     st.write(collection_info)
 
     st.write('vector_count:')
-    st.write(vector_count)
+    st.write(point_count)
 
-    return vector_count is not None and vector_count > 0
+    return point_count is not None and point_count > 0
 
 
 def get_vector_store(embeddings):
