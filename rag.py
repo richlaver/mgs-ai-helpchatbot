@@ -1,103 +1,236 @@
-from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode, tools_condition
-from langgraph.graph import MessagesState, StateGraph
+"""Define the Retrieval-Augmented Generation (RAG) pipeline using LangGraph.
+
+This module builds a workflow to handle MissionOS queries by retrieving context,
+executing tools, and generating responses with text, images, and videos.
+"""
+
+import base64
+import logging
+import re
+from typing import List, Tuple
+
+import streamlit as st
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
+from langchain.prompts import ChatPromptTemplate
 from langgraph.checkpoint.memory import MemorySaver
-import streamlit as st
+from langgraph.graph import END, StateGraph
+from langgraph.prebuilt import ToolNode
+
+import database
+from classes import MessagesState
+
+
+# Configure logging for debugging and monitoring
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
+
 
 def build_graph(llm, vector_store):
-    st.session_state.status.write(':material/lan: Building LangGraph graph...')
+    """Build the LangGraph workflow for query processing.
+
+    Args:
+        llm: The language model instance for generating responses.
+        vector_store: The Qdrant vector store for document retrieval.
+
+    Returns:
+        A compiled LangGraph instance ready to process queries.
+    """
+    st.session_state.status.write(":material/lan: Building LangGraph workflow...")
+
     @tool(response_format="content_and_artifact")
-    def retrieve(query: str):
-        """Retrieve detailed information about MissionOS for any query that seeks knowledge, context, or clarification.
-        Use this tool whenever a user asks about MissionOS, needs more details, or provides an ambiguous or general request
-        (e.g., 'Tell me about it', 'What is this?', 'How does it work?').
-        Returns up to 4 relevant documents from the MissionOS vector store."""
+    def retrieve(query: str) -> Tuple[str, dict]:
+        """Retrieve MissionOS information including text, images, and videos.
+
+        Searches the vector store for relevant documents, extracts image references,
+        and fetches corresponding images from the database. Deduplicates videos by URL.
+
+        Args:
+            query: The user's query string.
+
+        Returns:
+            A tuple of serialized document content and an artifact dictionary
+            containing documents, images, and videos.
+        """
+        # Perform similarity search
         retrieved_docs = vector_store.similarity_search(query, k=4)
-        serialized = "\n\n".join(
-            (f"Source: {doc.metadata}\n" f"Content: {doc.page_content}")
+        serialized_docs = "\n\n".join(
+            f"Source: {doc.metadata.get('source', 'unknown')}\nContent: {doc.page_content}"
             for doc in retrieved_docs
         )
-        return serialized, retrieved_docs
-    
 
-    # System message to guide LLM behavior
-    system_prompt = SystemMessage(
-        content="You are an assistant for MissionOS, a platform for managing instruments and data. "
-                "Use the 'retrieve' tool to fetch additional context for any query that is ambiguous, "
-                "general, or requires specific MissionOS information (e.g., setup, usage, troubleshooting). "
-                "Only respond directly without tools for simple greetings or clear non-info requests."
-    )
-    
+        # Collect image IDs and videos
+        image_ids: List[int] = []
+        videos_set = set()
+        for doc in retrieved_docs:
+            logger.info(
+                f"Retrieved document: source={doc.metadata.get('source', 'unknown')}, "
+                f"videos={doc.metadata.get('videos', [])}"
+            )
+            # Extract videos
+            for video in doc.metadata.get("videos", []):
+                videos_set.add((video["url"], video["title"]))
+            # Extract image IDs from content
+            chunk = doc.page_content
+            ids = re.findall(r"db://images/(\d+)", chunk)
+            image_ids.extend(int(id) for id in ids)
 
-    # Step 1: Generate an AIMessage that may include a tool-call to be sent.
-    def query_or_respond(state: MessagesState):
-        """Generate tool call for retrieval or respond."""
+        # Convert videos set to list
+        videos = [{"url": url, "title": title} for url, title in videos_set]
+
+        # Fetch images from database
+        images = []
+        conn = None
+        try:
+            conn = database.getconn()
+            cursor = conn.cursor()
+            if image_ids:
+                cursor.execute(
+                    "SELECT id, image_binary, caption FROM images WHERE id = ANY(%s)",
+                    (image_ids,),
+                )
+                db_images = cursor.fetchall()
+                image_map = {
+                    f"db://images/{img[0]}": {
+                        "base64": base64.b64encode(img[1]).decode("utf-8"),
+                        "caption": img[2],
+                    }
+                    for img in db_images
+                }
+                # Associate images with documents
+                for doc in retrieved_docs:
+                    chunk = doc.page_content
+                    for img_ref, img_data in image_map.items():
+                        if img_ref in chunk or (
+                            img_data["caption"] and img_data["caption"] in chunk
+                        ):
+                            images.append(img_data)
+        except Exception as e:
+            logger.error(f"Error retrieving images: {str(e)}")
+        finally:
+            if conn is not None:
+                cursor.close()
+                conn.close()
+
+        logger.info(f"retrieve: Returning videos: {videos}")
+        return serialized_docs, {"docs": retrieved_docs, "images": images, "videos": videos}
+
+    def query_or_respond(state: MessagesState) -> dict:
+        """Decide whether to query tools or respond directly.
+
+        Processes the latest user query and determines if tool usage is needed.
+
+        Args:
+            state: The current conversation state with messages.
+
+        Returns:
+            A dictionary with the LLM's response message.
+        """
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", (
+                "You are an assistant for MissionOS. Use the 'retrieve' tool for "
+                "any info-seeking queries about MissionOS."
+            )),
+            ("human", "{query}"),
+        ])
         llm_with_tools = llm.bind_tools([retrieve])
-
-        # Prepend system prompt if not already in state
-        messages = state["messages"]
-        if not any(isinstance(m, SystemMessage) for m in messages):
-            messages = [system_prompt] + messages
-
-        response = llm_with_tools.invoke(messages)
-        # MessagesState appends messages to state instead of overwriting
+        chain = prompt | llm_with_tools
+        response = chain.invoke({"query": state["messages"][-1].content})
         return {"messages": [response]}
 
+    def tools_condition(state: MessagesState) -> str:
+        """Route based on whether the last message contains tool calls.
 
-    # Step 2: Execute the retrieval.
-    tools = ToolNode([retrieve])
+        Args:
+            state: The current conversation state with messages.
 
+        Returns:
+            The next node ("tools" or END).
+        """
+        last_message = state["messages"][-1]
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "tools"
+        return END
 
-    # Step 3: Generate a response using the retrieved content.
-    def generate(state: MessagesState):
-        """Generate answer."""
-        # Get generated ToolMessages
-        recent_tool_messages = []
-        for message in reversed(state["messages"]):
-            if message.type == "tool":
-                recent_tool_messages.append(message)
-            else:
-                break
-        tool_messages = recent_tool_messages[::-1]
+    def generate(state: MessagesState) -> dict:
+        """Generate a response using retrieved context and multimedia.
 
-        # Format into prompt
-        docs_content = "\n\n".join(doc.content for doc in tool_messages)
+        Combines tool outputs (text, images, videos) into a coherent response,
+        referencing images appropriately.
+
+        Args:
+            state: The current conversation state with messages and artifacts.
+
+        Returns:
+            A dictionary with the response message, images, and videos.
+        """
+        # Extract tool messages (most recent first)
+        tool_messages = [
+            msg for msg in reversed(state["messages"]) if msg.type == "tool"
+        ][::-1]
+
+        # Combine tool content
+        retrieved_content = "\n\n".join(
+            msg.content for msg in tool_messages if msg.content
+        )
+        images = []
+        videos = []
+        for msg in tool_messages:
+            if hasattr(msg, "artifact") and msg.artifact:
+                images.extend(msg.artifact.get("images", []))
+                videos.extend(msg.artifact.get("videos", []))
+
+        logger.info(f"extracted videos: {videos}")
+
+        # Build system prompt with context
         system_message_content = (
             "You are an assistant for question-answering tasks about MissionOS. "
-            "Use the following pieces of retrieved context to answer the question. "
-            "If you don't know the answer, say that you don't know."
-            "\n\n"
-            f"{docs_content}"
+            "Use the following pieces of retrieved context to answer the question accurately. "
+            "If an image is relevant, reference it using [Image N] (e.g., [Image 1], [Image 2]) "
+            "at the end of a sentence or logical break, ensuring the reference enhances "
+            "the explanation without disrupting sentence flow. "
+            "Do not place [Image N] mid-sentence unless absolutely necessary, and avoid "
+            "trailing punctuation (e.g., '.', ',') after [Image N]. "
+            "Number images sequentially based on their order (1 for first, 2 for second, etc.). "
+            "If you don't know the answer, say so clearly.\n\n"
+            f"Context:\n{retrieved_content}\n\n"
+            f"Available images: {len(images)} image(s)"
         )
+
+        # Filter conversation messages
         conversation_messages = [
-            message
-            for message in state["messages"]
+            message for message in state["messages"]
             if message.type in ("human", "system")
             or (message.type == "ai" and not message.tool_calls)
         ]
-        prompt = [SystemMessage(system_message_content)] + conversation_messages
+        prompt = [SystemMessage(content=system_message_content)] + conversation_messages
 
-        # Run
+        # Generate response
         response = llm.invoke(prompt)
-        return {"messages": [response]}
-    
+        return {"messages": [response], "images": images, "videos": videos}
 
+    # Initialize the graph
     graph_builder = StateGraph(MessagesState)
 
-    graph_builder.add_node(query_or_respond)
-    graph_builder.add_node(tools)
-    graph_builder.add_node(generate)
+    # Add nodes
+    graph_builder.add_node("query_or_respond", query_or_respond)
+    graph_builder.add_node("tools", ToolNode([retrieve]))
+    graph_builder.add_node("generate", generate)
 
+    # Define edges
     graph_builder.set_entry_point("query_or_respond")
     graph_builder.add_conditional_edges(
-        "query_or_respond",
-        tools_condition,
-        {END: END, "tools": "tools"},
+        source="query_or_respond",
+        path=tools_condition,
+        path_map={END: END, "tools": "tools"},
     )
     graph_builder.add_edge("tools", "generate")
     graph_builder.add_edge("generate", END)
 
+    # Compile with memory
     memory = MemorySaver()
     return graph_builder.compile(checkpointer=memory)

@@ -11,3 +11,5 @@ langchain_qdrant
 qdrant_client
 playwright
 pandas
+pg8000
+cloud-sql-python-connector[pg8000]
