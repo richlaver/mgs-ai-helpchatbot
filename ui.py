@@ -40,7 +40,10 @@ def render_chatbot() -> None:
         .stChatInput {
             position: fixed;
             bottom: 10px;
-            width: 95%;
+            width: 100%;
+            max-width: 720px;
+            left: 50%;
+            transform: translateX(-50%);
             background-color: white;
             z-index: 1000;
         }
@@ -114,7 +117,7 @@ def render_chatbot() -> None:
                                             if cleaned_caption.strip()
                                             else None
                                         ),
-                                        use_column_width=True,
+                                        use_container_width=True,
                                         output_format="auto",
                                         clamp=True,
                                         channels="RGB",
@@ -230,7 +233,7 @@ def render_chatbot() -> None:
                                                         if cleaned_caption.strip()
                                                         else None
                                                     ),
-                                                    use_column_width=True,
+                                                    use_container_width=True,
                                                     output_format="auto",
                                                     clamp=True,
                                                     channels="RGB",
