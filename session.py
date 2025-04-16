@@ -47,3 +47,13 @@ def setup_session() -> None:
 
     if "videos" not in st.session_state:
         st.session_state.videos = []
+
+    # Initialize retrieval parameters
+    if "chunk_size" not in st.session_state:
+        st.session_state.chunk_size = 1000
+
+    if "chunk_overlap" not in st.session_state:
+        st.session_state.chunk_overlap = 200
+        
+    if "retrieval_k" not in st.session_state:
+        st.session_state.retrieval_k = 4

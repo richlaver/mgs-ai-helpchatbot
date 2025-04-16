@@ -5,7 +5,9 @@ manual webpages to extract text, images, and videos.
 """
 
 import base64
+import json
 import logging
+import os
 from typing import List
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -24,7 +26,10 @@ from langchain_text_splitters import HTMLSemanticPreservingSplitter, RecursiveCh
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler()]
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("scrape_debug.log")
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -139,11 +144,68 @@ def generate_webpaths() -> List[str]:
     return [base_url + str(id) for id in ids]
 
 
-def web_scrape() -> List[Document]:
+def load_cached_docs(cache_dir: str = "scrape_cache") -> List[Document]:
+    """Load cached raw documents from disk.
+
+    Args:
+        cache_dir: Directory where cached JSON files are stored.
+
+    Returns:
+        A list of Document objects loaded from cache, or empty list if cache is invalid.
+    """
+    if not os.path.exists(cache_dir):
+        logger.info("No cache directory found")
+        return []
+
+    docs = []
+    for filename in os.listdir(cache_dir):
+        if filename.endswith(".json"):
+            try:
+                with open(os.path.join(cache_dir, filename), "r") as f:
+                    data = json.load(f)
+                doc = Document(
+                    page_content=data["page_content"],
+                    metadata=data["metadata"]
+                )
+                docs.append(doc)
+                logger.info(f"Loaded cached document: {data['metadata'].get('source', 'unknown')}")
+            except Exception as e:
+                logger.error(f"Error loading cached file {filename}: {str(e)}")
+    logger.info(f"Loaded {len(docs)} cached documents")
+    return docs
+
+
+def save_cached_docs(docs: List[Document], cache_dir: str = "scrape_cache") -> None:
+    """Save raw documents to disk as JSON files.
+
+    Args:
+        docs: List of Document objects to cache.
+        cache_dir: Directory to store JSON files.
+    """
+    os.makedirs(cache_dir, exist_ok=True)
+    for i, doc in enumerate(docs):
+        try:
+            cache_data = {
+                "page_content": doc.page_content,
+                "metadata": doc.metadata
+            }
+            filename = os.path.join(cache_dir, f"doc_{i}.json")
+            with open(filename, "w") as f:
+                json.dump(cache_data, f)
+            logger.info(f"Cached document: {doc.metadata.get('source', 'unknown')}")
+        except Exception as e:
+            logger.error(f"Error caching document {doc.metadata.get('source', 'unknown')}: {str(e)}")
+
+
+def web_scrape(use_cache: bool = True, cache_dir: str = "scrape_cache") -> List[Document]:
     """Scrape MissionOS manual webpages for text, images, and videos.
 
-    Extracts content from specified URLs, processes images and videos, and stores
-    images in the database.
+    Loads raw documents from cache if available, otherwise uses AsyncChromiumLoader.
+    Processes documents to extract content, images, and videos, storing images in the database.
+
+    Args:
+        use_cache: If True, attempt to load from cache before scraping.
+        cache_dir: Directory for cached JSON files.
 
     Returns:
         A list of Document objects with processed content and metadata.
@@ -151,20 +213,31 @@ def web_scrape() -> List[Document]:
     Raises:
         Exception: If scraping or database operations fail.
     """
-    # Use prototype URLs for testing
-    # webpaths = [
-    #     "https://www.maxwellgeosystems.com/manuals/demo-manual/manual-web-content-highlight.php?manual_id=76",
-    #     "https://www.maxwellgeosystems.com/manuals/demo-manual/manual-web-content-highlight.php?manual_id=117",
-    #     "https://www.maxwellgeosystems.com/manuals/demo-manual/manual-web-content-highlight.php?manual_id=112",
-    #     "https://www.maxwellgeosystems.com/manuals/demo-manual/manual-web-content-highlight.php?manual_id=72",
-    # ]
-    webpaths = generate_webpaths()  # Uncomment for full scraping
+    # Try loading from cache
+    if use_cache:
+        cached_docs = load_cached_docs(cache_dir)
+        if cached_docs:
+            logger.info("Using cached documents, skipping AsyncChromiumLoader")
+            docs = cached_docs
+        else:
+            logger.info("No cached documents found, proceeding with scraping")
+            webpaths = generate_webpaths()
+            logger.info(f"Scraping {len(webpaths)} pages")
+            st.session_state.status.write(":material/hourglass_top: Loading webpages...")
+            loader = AsyncChromiumLoader(urls=webpaths)
+            docs = loader.load()
+            logger.info(f"Loaded {len(docs)} raw pages")
+            save_cached_docs(docs, cache_dir)
+    else:
+        webpaths = generate_webpaths()
+        logger.info(f"Scraping {len(webpaths)} pages")
+        st.session_state.status.write(":material/hourglass_top: Loading webpages...")
+        loader = AsyncChromiumLoader(urls=webpaths)
+        docs = loader.load()
+        logger.info(f"Loaded {len(docs)} raw pages")
+        save_cached_docs(docs, cache_dir)
 
-    st.session_state.status.write(":material/hourglass_top: Loading webpages...")
-    loader = AsyncChromiumLoader(urls=webpaths)
-    docs = loader.load()
-
-    st.session_state.status.write(":material/web: Scraping webpages...")
+    st.session_state.status.write(":material/web: Processing webpages...")
     conn = None
     try:
         conn = getconn()
@@ -175,14 +248,15 @@ def web_scrape() -> List[Document]:
 
         for doc in docs:
             base_url = doc.metadata["source"]
-            logger.info(f"Processing document: {base_url}")
+            logger.info(f"Processing page {doc_num + 1}/{len(docs)}: {base_url}")
             soup = BeautifulSoup(doc.page_content, "html.parser")
             div_print = soup.find("div", id="div_print")
 
             doc.metadata["videos"] = []
-            logger.info(f"Initialized doc.metadata['videos'] for {base_url}")
+            logger.info(f"Initialized videos metadata for {base_url}")
 
             if div_print:
+                logger.info(f"Found div_print for {base_url}")
                 # Convert relative URLs to absolute
                 for a_tag in div_print.find_all("a"):
                     href = a_tag.get("href")
@@ -249,6 +323,7 @@ def web_scrape() -> List[Document]:
                             url_tag = iframe_soup.find("link", rel="canonical")
                             video_url = url_tag.get("href", watch_url) if url_tag else watch_url
                             doc.metadata["videos"].append({"url": video_url, "title": title})
+                            logger.info(f"Added video: {title} ({video_url})")
                         except Exception as e:
                             logger.warning(f"Error processing iframe {iframe_src}: {str(e)}")
                             video_id = (
@@ -261,8 +336,7 @@ def web_scrape() -> List[Document]:
                             doc.metadata["videos"].append(
                                 {"url": iframe_src, "title": fallback_title}
                             )
-
-                logger.info(f"doc.metadata['videos'] after extraction: {doc.metadata['videos']}")
+                            logger.info(f"Added fallback video: {fallback_title}")
 
                 # Convert specific <p> tags to <h1>
                 for p_tag in div_print.find_all("p", class_="headingp page-header"):
@@ -271,40 +345,57 @@ def web_scrape() -> List[Document]:
                     p_tag.replace_with(new_tag)
 
                 # Process and store images
-                for img in div_print.find_all("img"):
-                    img_id = None
+                img_count = 0
+                imgs = div_print.find_all("img")
+                logger.info(f"Found {len(imgs)} <img> tags in {base_url}")
+                for img in imgs:
+                    img_count += 1
                     src = img.get("src", "")
                     if src.startswith("data:image/png;base64,"):
-                        base64_string = src.split(",")[1]
-                        image_binary = base64.b64decode(base64_string)
-                        figure = img.find_parent("figure")
-                        caption = ""
-                        if figure:
-                            figcaption = figure.find("figcaption")
-                            if figcaption:
-                                caption = figcaption.get_text(strip=True)
+                        try:
+                            base64_string = src.split(",")[1]
+                            image_binary = base64.b64decode(base64_string)
+                            logger.info(f"Decoded base64 for image {img_count} in {base_url}")
+                            figure = img.find_parent("figure")
+                            caption = ""
+                            if figure:
+                                figcaption = figure.find("figcaption")
+                                if figcaption:
+                                    caption = figcaption.get_text(strip=True)
 
-                        cursor.execute(
-                            """
-                            INSERT INTO images (url, image_binary, caption)
-                            VALUES (%s, %s, %s)
-                            RETURNING id
-                            """,
-                            (base_url, image_binary, caption),
-                        )
-                        img_id = cursor.fetchone()[0]
-                        img["src"] = f"db://images/{img_id}"
+                            cursor.execute(
+                                """
+                                INSERT INTO images (url, image_binary, caption)
+                                VALUES (%s, %s, %s)
+                                RETURNING id
+                                """,
+                                (base_url, image_binary, caption),
+                            )
+                            img_id = cursor.fetchone()[0]
+                            img["src"] = f"db://images/{img_id}"
+                            logger.info(f"Stored image {img_count} with ID {img_id} for {base_url}")
+                        except Exception as e:
+                            logger.error(f"Error storing image {img_count} in {base_url}: {str(e)}")
+                    else:
+                        logger.warning(f"Image {img_count} in {base_url} has invalid src: {src}")
 
                 doc.page_content = str(div_print.decode_contents())
             else:
                 logger.warning(f"No div_print found for {base_url}")
                 doc.page_content = ""
 
-            logger.info(f"Final doc.metadata['videos'] for {base_url}: {doc.metadata['videos']}")
+            logger.info(f"Processed {len(doc.metadata.get('videos', []))} videos for {base_url}")
             doc_num += 1
             web_scrape_progress.progress(value=doc_num / len(docs))
 
-        conn.commit()
+        # Commit transaction
+        try:
+            conn.commit()
+            logger.info("Database commit successful")
+        except Exception as e:
+            logger.error(f"Database commit failed: {str(e)}")
+            raise
+
     except Exception as e:
         st.session_state.error(f"Error during scraping: {str(e)}")
         logger.error(f"Scraping error: {str(e)}")
@@ -329,7 +420,7 @@ def chunk_text(docs: List[Document]) -> List[Document]:
     Returns:
         A list of chunked Document objects with updated metadata.
     """
-    st.session_state.status.write(":material/content_cut: Chunking text semantically...")
+    st.session_state.status.update(":material/content_cut: Chunking text semantically...")
     logger.info(f"Processing {len(docs)} documents")
 
     # Configure HTML splitter
@@ -341,8 +432,8 @@ def chunk_text(docs: List[Document]) -> List[Document]:
     ]
     splitter = HTMLSemanticPreservingSplitter(
         headers_to_split_on=headers_to_split_on,
-        max_chunk_size=1000,
-        chunk_overlap=200,
+        max_chunk_size=st.session_state.get("chunk_size", 1000),
+        chunk_overlap=st.session_state.get("chunk_overlap", 200),
         separators=["\n\n", "\n", ". ", "! ", "? "],
         preserve_links=True,
         preserve_images=True,
@@ -381,8 +472,8 @@ def chunk_text(docs: List[Document]) -> List[Document]:
     if not all_splits:
         logger.warning("No chunks from HTML splitter, using RecursiveCharacterTextSplitter")
         fallback_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
+            chunk_size=st.session_state.get("chunk_size", 1000),
+            chunk_overlap=st.session_state.get("chunk_overlap", 200),
             separators=["\n\n", "\n", ". ", "! ", "? "],
         )
         all_splits = fallback_splitter.split_documents(docs)
@@ -393,7 +484,7 @@ def chunk_text(docs: List[Document]) -> List[Document]:
         logger.warning("No chunks created, using original documents")
         all_splits = docs[:]
 
-    st.session_state.status.write(":material/done: Chunking complete.")
+    st.session_state.status.update(":material/done: Chunking complete.")
     logger.info(f"Created {len(all_splits)} chunks/documents")
     return all_splits
 

@@ -4,8 +4,11 @@ This module initializes the LLM, embeddings, Qdrant vector store, and database,
 ensuring all components are ready for the RAG pipeline.
 """
 
+import json
 import os
 import subprocess
+from datetime import datetime
+
 import streamlit as st
 from langchain_google_vertexai import VertexAIEmbeddings
 from langchain_openai import ChatOpenAI
@@ -162,10 +165,10 @@ def rebuild_database() -> None:
 def display_setup() -> None:
     """Display admin setup controls in the Streamlit UI.
 
-    Provides options to re-scrape the manual or reconfigure the RAG pipeline,
-    protected by a password.
+    Provides options to update the database, configure retrieval parameters,
+    and evaluate retrieval performance, protected by a password.
     """
-    with st.expander(label="Set-up", expanded=False, icon=":material/lock_open:"):
+    with st.expander(label="Admin log-in", expanded=False, icon=":material/lock_open:"):
         password = st.text_input(
             label="Password",
             type="password",
@@ -173,19 +176,84 @@ def display_setup() -> None:
         )
 
         if password == st.secrets.admin_password:
-            st.divider()
-            with st.container():
-                if st.button(
-                    label=":material/database: Re-scrape manual",
-                    type="secondary",
-                ):
-                    rebuild_database()
+            st.success("Logged in as admin")
 
-                if st.button(
-                    label=":material/settings: Re-configure RAG",
-                    type="secondary",
-                ):
-                    st.session_state.graph = rag.build_graph(
-                        llm=st.session_state.llm,
-                        vector_store=st.session_state.vector_store,
-                    )
+            # Database and retrieval parameters
+            st.subheader("Database and Retrieval Parameters")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                new_k = st.number_input("Number of chunks to retrieve (k)", min_value=1, max_value=20, value=st.session_state.get("retrieval_k", 4))
+            with col2:
+                new_chunk_size = st.number_input("Chunk size", min_value=100, max_value=5000, value=st.session_state.get("chunk_size", 1000), step=100)
+            with col3:
+                new_chunk_overlap = st.number_input("Chunk overlap", min_value=0, max_value=1000, value=st.session_state.get("chunk_overlap", 200), step=50)
+
+            if st.button("Update Database and Parameters"):
+                st.session_state.retrieval_k = new_k
+                st.session_state.chunk_size = new_chunk_size
+                st.session_state.chunk_overlap = new_chunk_overlap
+                with st.session_state.status:
+                    try:
+                        docs = database.web_scrape(use_cache=True)
+                        all_splits = database.chunk_text(docs)
+                        set_google_credentials()
+                        embeddings = get_embeddings()
+                        st.session_state.vector_store = get_vector_store(embeddings)
+                        database.index_chunks(all_splits, st.session_state.vector_store)
+                        st.session_state.graph = rag.build_graph(
+                            llm=st.session_state.llm,
+                            vector_store=st.session_state.vector_store,
+                        )
+                        st.success(f"Database updated with k={new_k}, chunk_size={new_chunk_size}, overlap={new_chunk_overlap}")
+                    except Exception as e:
+                        st.error(f"Error updating database: {str(e)}")
+
+            # Retrieval evaluation
+            st.subheader("Retrieval Evaluation")
+            test_csv = "retrieval_test_set.csv"
+            if st.button("Run Retrieval Test"):
+                if not st.session_state.vector_store:
+                    st.error("Vector store not initialized. Update database first.")
+                else:
+                    try:
+                        from evaluate_retrieval import load_test_set, evaluate_retrieval
+                        test_df = load_test_set(test_csv)
+                        with st.spinner("Running retrieval test..."):
+                            results, total_time, retrieval_time = evaluate_retrieval(
+                                test_df, st.session_state.vector_store, k=st.session_state.retrieval_k
+                            )
+                        # Display results
+                        st.write(f"**Average Precision@{st.session_state.retrieval_k}**: {results['avg_precision']:.4f}")
+                        st.write(f"**Average Recall@{st.session_state.retrieval_k}**: {results['avg_recall']:.4f}")
+                        st.write(f"**Average MRR**: {results['avg_mrr']:.4f}")
+                        st.write(f"**Total Execution Time**: {total_time:.2f} seconds")
+                        st.write(f"**Retrieval Time**: {retrieval_time:.2f} seconds")
+                        st.write("**Per-query Results**:")
+                        for res in results["per_query_results"]:
+                            st.write(f"- **Query**: {res['query']}")
+                            st.write(f"  Precision: {res['precision']:.4f}, Recall: {res['recall']:.4f}, MRR: {res['mrr']:.4f}")
+                            st.write(f"  Retrieved IDs: {res['retrieved_ids']}")
+                            st.write(f"  Ground Truth IDs: {res['ground_truth_ids']}")
+                        # Store results for download
+                        st.session_state.retrieval_results = {
+                            "timestamp": datetime.now().isoformat(),
+                            "parameters": {
+                                "k": st.session_state.retrieval_k,
+                                "chunk_size": st.session_state.chunk_size,
+                                "chunk_overlap": st.session_state.chunk_overlap
+                            },
+                            "metrics": results,
+                            "total_time": total_time,
+                            "retrieval_time": retrieval_time
+                        }
+                    except Exception as e:
+                        st.error(f"Error running retrieval test: {str(e)}")
+
+            if "retrieval_results" in st.session_state:
+                results_json = json.dumps(st.session_state.retrieval_results, indent=2)
+                st.download_button(
+                    label="Download Retrieval Results",
+                    data=results_json,
+                    file_name=f"retrieval_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
