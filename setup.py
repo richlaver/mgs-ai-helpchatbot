@@ -178,18 +178,15 @@ def display_setup() -> None:
         if password == st.secrets.admin_password:
             st.success("Logged in as admin")
 
-            # Database and retrieval parameters
-            st.subheader("Database and Retrieval Parameters")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                new_k = st.number_input("Number of chunks to retrieve (k)", min_value=1, max_value=20, value=st.session_state.get("retrieval_k", 4))
-            with col2:
+            # Database parameters
+            st.subheader("Database Parameters")
+            db_col1, db_col2, _ = st.columns(3)
+            with db_col1:
                 new_chunk_size = st.number_input("Chunk size", min_value=100, max_value=5000, value=st.session_state.get("chunk_size", 1000), step=100)
-            with col3:
+            with db_col2:
                 new_chunk_overlap = st.number_input("Chunk overlap", min_value=0, max_value=1000, value=st.session_state.get("chunk_overlap", 200), step=50)
 
-            if st.button("Update Database and Parameters"):
-                st.session_state.retrieval_k = new_k
+            if st.button("Update Database"):
                 st.session_state.chunk_size = new_chunk_size
                 st.session_state.chunk_overlap = new_chunk_overlap
                 with st.session_state.status:
@@ -204,14 +201,35 @@ def display_setup() -> None:
                             llm=st.session_state.llm,
                             vector_store=st.session_state.vector_store,
                         )
-                        st.success(f"Database updated with k={new_k}, chunk_size={new_chunk_size}, overlap={new_chunk_overlap}")
+                        st.success(f"Database updated with chunk_size={new_chunk_size}, overlap={new_chunk_overlap}")
                     except Exception as e:
                         st.error(f"Error updating database: {str(e)}")
+
+            # RAG parameters
+            st.subheader("RAG Parameters")
+            rag_col1, _, _ = st.columns(3)
+            with rag_col1:
+                new_k = st.number_input("Number of chunks to retrieve (k)", min_value=1, max_value=20, value=st.session_state.get("retrieval_k", 4))
+            
+            if st.button("Reconfigure RAG"):
+                st.session_state.retrieval_k = new_k
+                with st.session_state.status:
+                    try:
+                        st.session_state.graph = rag.build_graph(
+                            llm=st.session_state.llm,
+                            vector_store=st.session_state.vector_store,
+                        )
+                        st.success(f"RAG updated with number of chunks={new_k}")
+                    except Exception as e:
+                        st.error(f"Error updating RAG: {str(e)}")
 
             # Retrieval evaluation
             st.subheader("Retrieval Evaluation")
             test_csv = "retrieval_test_set.csv"
-            if st.button("Run Retrieval Test"):
+            if st.button(
+                label="Run Retrieval Test",
+                disabled=True
+            ):
                 if not st.session_state.vector_store:
                     st.error("Vector store not initialized. Update database first.")
                 else:

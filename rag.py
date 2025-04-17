@@ -160,7 +160,8 @@ def build_graph(llm, vector_store):
         """Generate a response using retrieved context and multimedia.
 
         Combines tool outputs (text, images, videos) into a coherent response,
-        referencing images appropriately.
+        referencing images appropriately. Logs details of retrieved chunks, including
+        text, URL, ID, videos, and images (excluding base64 data).
 
         Args:
             state: The current conversation state with messages and artifacts.
@@ -173,6 +174,36 @@ def build_graph(llm, vector_store):
             msg for msg in reversed(state["messages"]) if msg.type == "tool"
         ][::-1]
 
+        # Log retrieved chunk details from single tool message
+        for msg in tool_messages:
+            if not hasattr(msg, "artifact") or not msg.artifact:
+                logger.warning("Tool message has no artifact, skipping logging")
+                continue
+            artifact = msg.artifact
+            # Log artifact for debugging
+            logger.info(f"Tool message artifact: {artifact}")
+            videos = artifact.get("videos", [])
+            # Parse chunks from msg.content
+            chunks = re.findall(
+                r"Source: (https?://[^\n]+)\nContent: (.*?)(?=(Source:|$))",
+                msg.content,
+                re.DOTALL
+            )
+            if not chunks:
+                logger.warning("No chunks parsed from tool message content")
+                chunks = [(artifact.get("source", "unknown"), msg.content, "")]
+
+            # Log each chunk
+            chunk_id = msg.id if hasattr(msg, "id") else "unknown"
+            for i, (source, content, _) in enumerate(chunks, 1):
+                logger.info(
+                    f"Retrieved chunk {i}: "
+                    f"ID={chunk_id}-{i}, "
+                    f"URL={source}, "
+                    f"Videos={videos}, "
+                    f"Text preview={content[:500].strip() + '...' if content else 'empty'}"
+                )
+
         # Combine tool content
         retrieved_content = "\n\n".join(
             msg.content for msg in tool_messages if msg.content
@@ -184,21 +215,33 @@ def build_graph(llm, vector_store):
                 images.extend(msg.artifact.get("images", []))
                 videos.extend(msg.artifact.get("videos", []))
 
-        logger.info(f"extracted videos: {videos}")
-
         # Build system prompt with context
         system_message_content = (
-            "You are an assistant for question-answering tasks about MissionOS. "
-            "Use the following pieces of retrieved context to answer the question accurately. "
-            "If an image is relevant, reference it using [Image N] (e.g., [Image 1], [Image 2]) "
-            "at the end of a sentence or logical break, ensuring the reference enhances "
-            "the explanation without disrupting sentence flow. "
-            "Do not place [Image N] mid-sentence unless absolutely necessary, and avoid "
-            "trailing punctuation (e.g., '.', ',') after [Image N]. "
-            "Number images sequentially based on their order (1 for first, 2 for second, etc.). "
-            "If you don't know the answer, say so clearly.\n\n"
+            "You are a polite and helpful assistant providing information on MissionOS "
+            "to users of MissionOS. Treat the user's input as a request for information "
+            "and that the question has already been provided. Use the following pieces "
+            "of retrieved context, images, and videos to provide information that is "
+            "directly relevant to the user's request. Respond using simple language "
+            "that is easy to understand. The image captions provide clues how you can "
+            "reference the images in your response. The video titles provide clues how "
+            "you can reference the videos in your response. Treat the user as if all "
+            "he or she knows about MissionOS is that it is a construction and "
+            "instrumentation data platform. Provide options for further requests for "
+            "information. Start each response with an overview of the topic raised in "
+            "the question. The overview should introduce the topic and its context. "
+            "Order your response in a logical way and use bullet points or numbered "
+            "lists where appropriate. If the user asks a question that is definitely "
+            "not related to MissionOS, provide a polite response indicating that you "
+            "cannot assist. If an image is relevant, reference it using [Image N] "
+            "(e.g., [Image 1], [Image 2]) at the end of a sentence or logical break, "
+            "ensuring the reference enhances the explanation without disrupting "
+            "sentence flow. Do not place [Image N] mid-sentence unless absolutely "
+            "necessary, and avoid trailing punctuation (e.g., '.', ',') after "
+            "[Image N]. Number images sequentially based on their order (1 for first, "
+            "2 for second, etc.). If you don't know the answer, say so clearly.\n\n"
             f"Context:\n{retrieved_content}\n\n"
-            f"Available images: {len(images)} image(s)"
+            f"Available images: {len(images)} image(s)\n"
+            f"Available videos: {len(videos)} video(s)"
         )
 
         # Filter conversation messages

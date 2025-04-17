@@ -1,2 +1,4 @@
 /.streamlit/secrets.toml
 google_credentials.json
+**/*.log
+qdrant_points.csv
