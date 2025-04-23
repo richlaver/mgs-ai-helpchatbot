@@ -42,16 +42,20 @@ def install_playwright_browsers() -> None:
 
 
 def get_llm() -> ChatOpenAI:
-    """Initialize the Grok 3 language model.
+    """Initialize the Grok 3 Beta language model.
 
     Returns:
         A ChatOpenAI instance configured with xAI API.
     """
-    st.session_state.status.write(":material/emoji_objects: Setting up the Grok 3 LLM...")
+    st.session_state.status.write(":material/emoji_objects: Setting up the Grok 3 Beta LLM...")
     return ChatOpenAI(
         model="grok-3-beta",
         api_key=st.secrets.xai_api_key,
         base_url="https://api.x.ai/v1",
+        temperature=0.3,
+        top_p=0.5,
+        frequency_penalty=0.5,
+        presence_penalty=0.5,
     )
 
 
@@ -100,6 +104,13 @@ def create_collection() -> None:
             size=768,  # Matches text-embedding-004
             distance=models.Distance.COSINE,
         ),
+        quantization_config=models.ScalarQuantization(
+            scalar=models.ScalarQuantizationConfig(
+                type=models.ScalarType.INT8,
+                always_ram=True,
+            ),
+        ),
+        optimizers_config=models.OptimizersConfigDiff(default_segment_number=12),
     )
 
 

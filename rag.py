@@ -30,7 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def build_graph(llm, vector_store):
+def build_graph(llm, vector_store, k=st.session_state.retrieval_k) -> StateGraph:
     """Build the LangGraph workflow for query processing.
 
     Args:
@@ -57,7 +57,7 @@ def build_graph(llm, vector_store):
             containing documents, images, and videos.
         """
         # Perform similarity search
-        retrieved_docs = vector_store.similarity_search(query, k=4)
+        retrieved_docs = vector_store.similarity_search(query, k=k)
         serialized_docs = "\n\n".join(
             f"Source: {doc.metadata.get('source', 'unknown')}\nContent: {doc.page_content}"
             for doc in retrieved_docs

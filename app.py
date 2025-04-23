@@ -11,6 +11,10 @@ import rag
 import session
 import setup
 import ui
+import logging
+
+# Disable logging for production
+logging.getLogger().setLevel(100)
 
 
 def main() -> None:

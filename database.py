@@ -391,8 +391,8 @@ def chunk_text(docs: List[Document]) -> List[Document]:
     ]
     splitter = HTMLSemanticPreservingSplitter(
         headers_to_split_on=headers_to_split_on,
-        max_chunk_size=st.session_state.get("chunk_size", 1000),
-        chunk_overlap=st.session_state.get("chunk_overlap", 200),
+        max_chunk_size=st.session_state.get("chunk_size", st.session_state.chunk_size),
+        chunk_overlap=st.session_state.get("chunk_overlap", st.session_state.chunk_overlap),
         separators=["\n\n", "\n", ". ", "! ", "? "],
         preserve_links=True,
         preserve_images=True,
@@ -411,8 +411,8 @@ def chunk_text(docs: List[Document]) -> List[Document]:
     if not all_splits:
         logger.warning("No chunks from HTML splitter, using recursive text splitter")
         fallback_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=st.session_state.get("chunk_size", 1000),
-            chunk_overlap=st.session_state.get("chunk_overlap", 200),
+            chunk_size=st.session_state.get("chunk_size", st.session_state.chunk_size),
+            chunk_overlap=st.session_state.get("chunk_overlap", st.session_state.chunk_overlap),
             separators=["\n\n", "\n", ". ", "! ", "? "],
         )
         all_splits = fallback_splitter.split_documents(docs)

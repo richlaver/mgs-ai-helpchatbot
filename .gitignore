@@ -2,3 +2,5 @@
 google_credentials.json
 **/*.log
 qdrant_points.csv
+/__pycache__/
+/.devcontainer/
