@@ -211,6 +211,7 @@ def display_setup() -> None:
                         st.session_state.graph = rag.build_graph(
                             llm=st.session_state.llm,
                             vector_store=st.session_state.vector_store,
+                            k=st.session_state.retrieval_k
                         )
                         st.success(f"Database updated with chunk_size={new_chunk_size}, overlap={new_chunk_overlap}")
                     except Exception as e:
@@ -229,6 +230,7 @@ def display_setup() -> None:
                         st.session_state.graph = rag.build_graph(
                             llm=st.session_state.llm,
                             vector_store=st.session_state.vector_store,
+                            k=st.session_state.retrieval_k
                         )
                         st.success(f"RAG updated with number of chunks={new_k}")
                     except Exception as e:

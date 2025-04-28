@@ -5,12 +5,13 @@ executing tools, and generating responses with text, images, and videos.
 """
 
 import base64
+import csv
 import logging
 import re
 from typing import List, Tuple
 
 import streamlit as st
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.tools import tool
 from langchain.prompts import ChatPromptTemplate
 from langgraph.checkpoint.memory import MemorySaver
@@ -30,7 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def build_graph(llm, vector_store, k=st.session_state.retrieval_k) -> StateGraph:
+def build_graph(llm, vector_store, k) -> StateGraph:
     """Build the LangGraph workflow for query processing.
 
     Args:
@@ -57,7 +58,7 @@ def build_graph(llm, vector_store, k=st.session_state.retrieval_k) -> StateGraph
             containing documents, images, and videos.
         """
         # Perform similarity search
-        retrieved_docs = vector_store.similarity_search(query, k=k)
+        retrieved_docs = vector_store.similarity_search(query, k)
         serialized_docs = "\n\n".join(
             f"Source: {doc.metadata.get('source', 'unknown')}\nContent: {doc.page_content}"
             for doc in retrieved_docs
@@ -169,10 +170,26 @@ def build_graph(llm, vector_store, k=st.session_state.retrieval_k) -> StateGraph
         Returns:
             A dictionary with the response message, images, and videos.
         """
+        # Get the latest query from st.session_state.messages
+        query = None
+        for msg in reversed(st.session_state.get("messages", [])):
+            if isinstance(msg, HumanMessage) and hasattr(msg, "content"):
+                query = msg.content
+                break
+        if query is None:
+            logger.warning("No HumanMessage found in st.session_state.messages")
+            query = "unknown"
+        logger.info(f"Extracted query from st.session_state.messages: {query}")
+
         # Extract tool messages (most recent first)
         tool_messages = [
             msg for msg in reversed(state["messages"]) if msg.type == "tool"
         ][::-1]
+
+        # Prepare CSV file for writing chunk data
+        csv_file = "retrieved_chunks.csv"
+        csv_headers = ["Query", "Qdrant Point ID", "Page Content", "URL"]
+        csv_rows = []
 
         # Log retrieved chunk details from single tool message
         for msg in tool_messages:
@@ -180,8 +197,9 @@ def build_graph(llm, vector_store, k=st.session_state.retrieval_k) -> StateGraph
                 logger.warning("Tool message has no artifact, skipping logging")
                 continue
             artifact = msg.artifact
+            retrieved_docs = artifact.get("docs", [])
             # Log artifact for debugging
-            logger.info(f"Tool message artifact: {artifact}")
+            # logger.info(f"Tool message artifact: {artifact}") # Commented out because image data is too large
             videos = artifact.get("videos", [])
             # Parse chunks from msg.content
             chunks = re.findall(
@@ -193,16 +211,47 @@ def build_graph(llm, vector_store, k=st.session_state.retrieval_k) -> StateGraph
                 logger.warning("No chunks parsed from tool message content")
                 chunks = [(artifact.get("source", "unknown"), msg.content, "")]
 
-            # Log each chunk
-            chunk_id = msg.id if hasattr(msg, "id") else "unknown"
+            # Log each chunk and collect CSV data
             for i, (source, content, _) in enumerate(chunks, 1):
+                # Match chunk to retrieved document to get Qdrant point ID
+                point_id = "unknown"
+                for doc in retrieved_docs:
+                    if doc.page_content.strip() == content.strip():
+                        point_id = doc.metadata.get("_id", "unknown")
+                        break
+                if point_id == "unknown":
+                    logger.warning(
+                        f"No matching document or _id found for chunk {i}. "
+                        f"Metadata keys: {list(doc.metadata.keys()) if retrieved_docs else 'no docs'}"
+                    )
                 logger.info(
                     f"Retrieved chunk {i}: "
-                    f"ID={chunk_id}-{i}, "
+                    f"Qdrant Point ID={point_id}, "
                     f"URL={source}, "
                     f"Videos={videos}, "
                     f"Text preview={content[:500].strip() + '...' if content else 'empty'}"
                 )
+                # Collect data for CSV
+                csv_rows.append({
+                    "Query": query,
+                    "Qdrant Point ID": point_id,
+                    "Page Content": content.strip(),
+                    "URL": source
+                })
+
+        # Write to CSV file
+        try:
+            with open(csv_file, mode="a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=csv_headers)
+                # Write header if file is empty
+                if f.tell() == 0:
+                    writer.writeheader()
+                # Write all rows
+                for row in csv_rows:
+                    writer.writerow(row)
+            logger.info(f"Successfully wrote {len(csv_rows)} chunks to {csv_file}")
+        except Exception as e:
+            logger.error(f"Error writing to CSV file {csv_file}: {str(e)}")
 
         # Combine tool content
         retrieved_content = "\n\n".join(

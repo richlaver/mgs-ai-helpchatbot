@@ -14,7 +14,7 @@ import ui
 import logging
 
 # Disable logging for production
-logging.getLogger().setLevel(100)
+# logging.getLogger().setLevel(100)
 
 
 def main() -> None:
@@ -51,6 +51,7 @@ def main() -> None:
         st.session_state.graph = rag.build_graph(
             llm=st.session_state.llm,
             vector_store=st.session_state.vector_store,
+            k=st.session_state.retrieval_k
         )
 
     # Display UI components
