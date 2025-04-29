@@ -202,17 +202,10 @@ def display_setup() -> None:
                 st.session_state.chunk_overlap = new_chunk_overlap
                 with st.session_state.status:
                     try:
-                        docs = database.web_scrape(use_cache=True)
-                        all_splits = database.chunk_text(docs)
                         set_google_credentials()
                         embeddings = get_embeddings()
+                        rebuild_database()
                         st.session_state.vector_store = get_vector_store(embeddings)
-                        database.index_chunks(all_splits, st.session_state.vector_store)
-                        st.session_state.graph = rag.build_graph(
-                            llm=st.session_state.llm,
-                            vector_store=st.session_state.vector_store,
-                            k=st.session_state.retrieval_k
-                        )
                         st.success(f"Database updated with chunk_size={new_chunk_size}, overlap={new_chunk_overlap}")
                     except Exception as e:
                         st.error(f"Error updating database: {str(e)}")

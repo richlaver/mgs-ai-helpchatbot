@@ -39,8 +39,6 @@ def main() -> None:
         st.session_state.embeddings = setup.get_embeddings()
 
         if not setup.collection_exists() or not setup.points_exist():
-            database.create_images_table()
-            setup.create_collection()
             setup.rebuild_database()
 
         if not st.session_state.vector_store:
