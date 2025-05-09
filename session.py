@@ -57,3 +57,9 @@ def setup_session() -> None:
         
     if "retrieval_k" not in st.session_state:
         st.session_state.retrieval_k = 4
+
+    if "test_csv" not in st.session_state:
+        st.session_state.test_csv = False
+
+    if "results_csv" not in st.session_state:
+        st.session_state.results_csv = False

@@ -152,7 +152,6 @@ def render_chatbot() -> None:
             st.markdown(question)
 
         # Prepare graph execution
-        st.session_state.thread_id += 1
         config = {"configurable": {"thread_id": f"{st.session_state.thread_id}"}}
         system_prompt = SystemMessage(
             content=(
@@ -165,6 +164,7 @@ def render_chatbot() -> None:
             "messages": [system_prompt, user_message],
             "images": [],
             "videos": [],
+            "timings": []
         }
 
         # Process query with LangGraph
@@ -252,6 +252,15 @@ def render_chatbot() -> None:
                                             st.video(video["url"])
                                         except Exception as e:
                                             logger.error(f"Video render error: {str(e)}")
+                    final_state = step
+
+                # Display latency details
+                if final_state:
+                    timings = final_state.get("timings", [])
+                    with st.expander("Latency Details", expanded=True):
+                        for timing in timings:
+                            st.write(f"{timing['component']}: {timing['time']:.2f} seconds")
+
             except Exception as e:
                 logger.error(f"Graph streaming error: {str(e)}")
                 st.error(f"Failed to generate response: {str(e)}")

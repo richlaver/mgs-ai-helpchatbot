@@ -15,6 +15,8 @@ from langchain_openai import ChatOpenAI
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
+import pandas as pd
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 import database
 import rag
@@ -173,6 +175,65 @@ def rebuild_database() -> None:
     )
 
 
+def run_batch_test(test_csv, graph, vector_store):
+    """Process batch test queries and generate results CSV."""
+    df = pd.read_csv(test_csv)
+    grouped = df.groupby(['query_id', 'query_text'])
+    results = []
+
+    for (query_id, query_text), group in grouped:
+        ground_truth_ids = set(group['point_id'].astype(str))
+        config = {"configurable": {"thread_id": f"test_query_{query_id}"}}
+        initial_state = {
+            "messages": [SystemMessage(content="You are an assistant for MissionOS."), HumanMessage(content=query_text)],
+            "images": [],
+            "videos": [],
+            "timings": []
+        }
+        final_state = list(graph.stream(initial_state, stream_mode="values", config=config))[-1]
+        response_message = [msg for msg in final_state["messages"] if isinstance(msg, AIMessage) and not msg.tool_calls][-1]
+        response_text = response_message.content
+        tool_message = [msg for msg in final_state["messages"] if msg.type == "tool"][-1]
+        retrieved_docs = tool_message.artifact["docs"]
+        retrieved_ids = [doc.metadata.get('_id', 'unknown') for doc in retrieved_docs]
+        timings = final_state["timings"]
+
+        retrieved_set = set(retrieved_ids)
+        gt_set = ground_truth_ids
+        tp = retrieved_set.intersection(gt_set)
+        if gt_set.issubset(retrieved_set):
+            precision = 1.0
+        else:
+            precision = len(tp) / len(retrieved_set) if retrieved_set else 0
+        if retrieved_set.issubset(gt_set):
+            recall = 1.0
+        else:
+            recall = len(tp) / len(gt_set) if gt_set else 0
+        f1 = 2 * (precision * recall) / (precision + recall) if precision + recall > 0 else 0
+
+        for doc in retrieved_docs:
+            chunk_id = doc.metadata.get('_id', 'unknown')
+            chunk_text = doc.page_content
+            chunk_url = doc.metadata.get('source', 'unknown')
+            is_in_gt = chunk_id in gt_set
+            results.append({
+                'Test query ID': query_id,
+                'Query text': query_text,
+                'Response text': response_text,
+                'Retrieved chunk ID': chunk_id,
+                'Retrieved chunk text': chunk_text,
+                'Retrieved chunk page URL': chunk_url,
+                'Is in ground truth': is_in_gt,
+                'Precision': precision,
+                'Recall': recall,
+                'F1 score': f1,
+                **{f"{timing['component']} (s)": timing['time'] for timing in timings}
+            })
+
+    results_df = pd.DataFrame(results)
+    return results_df.to_csv(index=False)
+
+
 def display_setup() -> None:
     """Display admin setup controls in the Streamlit UI.
 
@@ -228,6 +289,27 @@ def display_setup() -> None:
                         st.success(f"RAG updated with number of chunks={new_k}")
                     except Exception as e:
                         st.error(f"Error updating RAG: {str(e)}")
+
+            # Batch Testing
+            st.subheader("Batch Testing")
+            test_csv = st.file_uploader("Upload Test CSV", type="csv", disabled=not st.session_state.vector_store or not st.session_state.graph)
+            if test_csv:
+                st.session_state.test_csv = test_csv
+                if st.button("Run Batch Test", disabled=not st.session_state.test_csv):
+                    with st.spinner("Running batch test..."):
+                        try:
+                            results_csv = run_batch_test(st.session_state.test_csv, st.session_state.graph, st.session_state.vector_store)
+                            st.session_state.results_csv = results_csv
+                            st.success("Batch test completed.")
+                        except Exception as e:
+                            st.error(f"Error running batch test: {str(e)}")
+            if st.session_state.results_csv:
+                st.download_button(
+                    label="Download Results CSV",
+                    data=st.session_state.results_csv,
+                    file_name="test_results.csv",
+                    mime="text/csv"
+                )
 
             # Retrieval evaluation
             st.subheader("Retrieval Evaluation")
