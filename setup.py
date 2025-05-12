@@ -4,18 +4,16 @@ This module initializes the LLM, embeddings, Qdrant vector store, and database,
 ensuring all components are ready for the RAG pipeline.
 """
 
-import json
 import os
 import subprocess
-from datetime import datetime
-
+import numpy as np
+import pandas as pd
 import streamlit as st
 from langchain_google_vertexai import VertexAIEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
-import pandas as pd
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 import database
@@ -142,13 +140,13 @@ def points_exist() -> bool:
 
 
 def get_vector_store(embeddings: VertexAIEmbeddings) -> QdrantVectorStore:
-    """Initialize the Qdrant vector store.
+    """Initializes the Qdrant vector store.
 
     Args:
-        embeddings: The embeddings model for vectorization.
+        embeddings: Embeddings model for vectorization.
 
     Returns:
-        A QdrantVectorStore instance.
+        Configured QdrantVectorStore instance.
     """
     st.session_state.status.write(":material/database: Setting up Qdrant vector store...")
     return QdrantVectorStore(
@@ -159,16 +157,15 @@ def get_vector_store(embeddings: VertexAIEmbeddings) -> QdrantVectorStore:
 
 
 def rebuild_database() -> None:
-    """Rebuild the database and vector store from scratch.
-
-    Deletes and recreates the Qdrant collection, scrapes webpages, and indexes chunks.
-    """
+    """Rebuild the database and vector store from scratch."""
     delete_collection()
     create_collection()
     database.create_images_table()
 
     docs = database.web_scrape()
     all_splits = database.chunk_text(docs=docs)
+    embeddings = get_embeddings()
+    st.session_state.vector_store = get_vector_store(embeddings)
     database.index_chunks(
         all_splits=all_splits,
         vector_store=st.session_state.vector_store,
@@ -176,46 +173,110 @@ def rebuild_database() -> None:
 
 
 def run_batch_test(test_csv, graph, vector_store):
-    """Process batch test queries and generate results CSV."""
+    """Processes batch test queries and generates results CSV with NDCG, MAP, MRR, and relevance scores, yielding progress updates.
+
+    Args:
+        test_csv: Uploaded CSV file with test queries.
+        graph: LangGraph instance for query processing.
+        vector_store: Qdrant vector store for retrieval.
+
+    Yields:
+        Tuple of (current_query, total_queries, results) where results is a list of result dictionaries.
+    """
+    def dcg_at_k(ranks):
+        """Calculate Discounted Cumulative Gain (DCG)."""
+        return np.sum([rel / np.log2(rank + 2) for rank, rel in enumerate(ranks)])
+
+    def ndcg_at_k(true_relevance, predicted_scores):
+        """Calculate Normalized DCG (NDCG)."""
+        if not true_relevance or not predicted_scores:
+            return 0.0
+        actual_dcg = dcg_at_k([true_relevance[i] for i in np.argsort(predicted_scores)[::-1]])
+        ideal_dcg = dcg_at_k(sorted(true_relevance, reverse=True))
+        return actual_dcg / ideal_dcg if ideal_dcg > 0 else 0.0
+
+    def average_precision(true_relevance, predicted_scores):
+        """Calculate Average Precision (AP) for MAP."""
+        if not true_relevance or not predicted_scores:
+            return 0.0
+        sorted_indices = np.argsort(predicted_scores)[::-1]
+        relevant = 0
+        precision_sum = 0.0
+        for i, idx in enumerate(sorted_indices):
+            if true_relevance[idx] == 1:
+                relevant += 1
+                precision_sum += relevant / (i + 1)
+        return precision_sum / sum(true_relevance) if sum(true_relevance) > 0 else 0.0
+
+    def reciprocal_rank(true_relevance, predicted_scores):
+        """Calculate Reciprocal Rank (RR) for MRR."""
+        if not true_relevance or not predicted_scores:
+            return 0.0
+        sorted_indices = np.argsort(predicted_scores)[::-1]
+        for i, idx in enumerate(sorted_indices):
+            if true_relevance[idx] == 1:
+                return 1.0 / (i + 1)
+        return 0.0
+
+    expected_timings = {
+        "Vector store retrieval": 0.0,
+        "Image fetch": 0.0,
+        "Tool execution": 0.0,
+        "LLM decision": 0.0,
+        "LLM generation": 0.0
+    }
+
     df = pd.read_csv(test_csv)
     grouped = df.groupby(['query_id', 'query_text'])
+    total_queries = len(grouped)
     results = []
 
-    for (query_id, query_text), group in grouped:
+    for i, ((query_id, query_text), group) in enumerate(grouped):
         ground_truth_ids = set(group['point_id'].astype(str))
         config = {"configurable": {"thread_id": f"test_query_{query_id}"}}
         initial_state = {
-            "messages": [SystemMessage(content="You are an assistant for MissionOS."), HumanMessage(content=query_text)],
+            "messages": [
+                HumanMessage(content=query_text),
+            ],
             "images": [],
             "videos": [],
-            "timings": []
+            "timings": [],
         }
         final_state = list(graph.stream(initial_state, stream_mode="values", config=config))[-1]
-        response_message = [msg for msg in final_state["messages"] if isinstance(msg, AIMessage) and not msg.tool_calls][-1]
+        response_message = [
+            msg for msg in final_state["messages"]
+            if isinstance(msg, AIMessage) and not msg.tool_calls
+        ][-1]
         response_text = response_message.content
-        tool_message = [msg for msg in final_state["messages"] if msg.type == "tool"][-1]
-        retrieved_docs = tool_message.artifact["docs"]
-        retrieved_ids = [doc.metadata.get('_id', 'unknown') for doc in retrieved_docs]
+        tool_message = [msg for msg in final_state["messages"] if msg.type == "tool"]
+        retrieved_docs = tool_message[-1].artifact["docs"] if tool_message else []
         timings = final_state["timings"]
 
-        retrieved_set = set(retrieved_ids)
-        gt_set = ground_truth_ids
-        tp = retrieved_set.intersection(gt_set)
-        if gt_set.issubset(retrieved_set):
-            precision = 1.0
-        else:
-            precision = len(tp) / len(retrieved_set) if retrieved_set else 0
-        if retrieved_set.issubset(gt_set):
-            recall = 1.0
-        else:
-            recall = len(tp) / len(gt_set) if gt_set else 0
-        f1 = 2 * (precision * recall) / (precision + recall) if precision + recall > 0 else 0
+        retrieved_results = vector_store.similarity_search_with_relevance_scores(
+            query_text, k=len(retrieved_docs) if retrieved_docs else 4
+        )
+        retrieved_results = sorted(retrieved_results, key=lambda x: x[1], reverse=True)
+        retrieved_docs = [doc for doc, _ in retrieved_results]
+        predicted_scores = [score for _, score in retrieved_results]
+        true_relevance = [
+            1 if doc.metadata.get('_id', 'unknown') in ground_truth_ids else 0
+            for doc in retrieved_docs
+        ]
 
-        for doc in retrieved_docs:
+        ndcg = ndcg_at_k(true_relevance, predicted_scores)
+        ap = average_precision(true_relevance, predicted_scores)
+        rr = reciprocal_rank(true_relevance, predicted_scores)
+
+        timing_dict = expected_timings.copy()
+        for timing in timings:
+            if timing["component"] in timing_dict:
+                timing_dict[timing["component"]] = timing["time"]
+
+        for doc, score in retrieved_results:
             chunk_id = doc.metadata.get('_id', 'unknown')
             chunk_text = doc.page_content
             chunk_url = doc.metadata.get('source', 'unknown')
-            is_in_gt = chunk_id in gt_set
+            is_in_gt = chunk_id in ground_truth_ids
             results.append({
                 'Test query ID': query_id,
                 'Query text': query_text,
@@ -224,22 +285,19 @@ def run_batch_test(test_csv, graph, vector_store):
                 'Retrieved chunk text': chunk_text,
                 'Retrieved chunk page URL': chunk_url,
                 'Is in ground truth': is_in_gt,
-                'Precision': precision,
-                'Recall': recall,
-                'F1 score': f1,
-                **{f"{timing['component']} (s)": timing['time'] for timing in timings}
+                'Relevance score': score,
+                'NDCG': ndcg,
+                'MAP': ap,
+                'MRR': rr,
+                **{f"{component} (s)": time for component, time in timing_dict.items()}
             })
 
-    results_df = pd.DataFrame(results)
-    return results_df.to_csv(index=False)
+        yield i + 1, total_queries, results
+    yield total_queries, total_queries, results
 
 
 def display_setup() -> None:
-    """Display admin setup controls in the Streamlit UI.
-
-    Provides options to update the database, configure retrieval parameters,
-    and evaluate retrieval performance, protected by a password.
-    """
+    """Renders admin setup controls in the Streamlit UI."""
     with st.expander(label="Admin log-in", expanded=False, icon=":material/lock_open:"):
         password = st.text_input(
             label="Password",
@@ -254,112 +312,87 @@ def display_setup() -> None:
             st.subheader("Database Parameters")
             db_col1, db_col2, _ = st.columns(3)
             with db_col1:
-                new_chunk_size = st.number_input("Chunk size", min_value=100, max_value=5000, value=st.session_state.get("chunk_size", 1000), step=100)
+                new_chunk_size = st.number_input(
+                    "Chunk size",
+                    min_value=100,
+                    max_value=5000,
+                    value=st.session_state.get("chunk_size", 1000),
+                    step=100,
+                )
             with db_col2:
-                new_chunk_overlap = st.number_input("Chunk overlap", min_value=0, max_value=1000, value=st.session_state.get("chunk_overlap", 200), step=50)
-
+                new_chunk_overlap = st.number_input(
+                    "Chunk overlap",
+                    min_value=0,
+                    max_value=1000,
+                    value=st.session_state.get("chunk_overlap", 200),
+                    step=50,
+                )
+            
             if st.button("Update Database"):
                 st.session_state.chunk_size = new_chunk_size
                 st.session_state.chunk_overlap = new_chunk_overlap
+                
                 with st.session_state.status:
-                    try:
-                        set_google_credentials()
-                        embeddings = get_embeddings()
-                        rebuild_database()
-                        st.session_state.vector_store = get_vector_store(embeddings)
-                        st.success(f"Database updated with chunk_size={new_chunk_size}, overlap={new_chunk_overlap}")
-                    except Exception as e:
-                        st.error(f"Error updating database: {str(e)}")
+                    set_google_credentials()
+                    embeddings = get_embeddings()
+                    rebuild_database()
+                    st.session_state.vector_store = get_vector_store(embeddings)
+                    st.success(f"Database updated with chunk_size={new_chunk_size}, overlap={new_chunk_overlap}")
 
             # RAG parameters
             st.subheader("RAG Parameters")
             rag_col1, _, _ = st.columns(3)
             with rag_col1:
-                new_k = st.number_input("Number of chunks to retrieve (k)", min_value=1, max_value=20, value=st.session_state.get("retrieval_k", 4))
+                new_k = st.number_input(
+                    "Number of chunks to retrieve (k)",
+                    min_value=1,
+                    max_value=20,
+                    value=st.session_state.get("retrieval_k", 4),
+                )
             
             if st.button("Reconfigure RAG"):
                 st.session_state.retrieval_k = new_k
                 with st.session_state.status:
-                    try:
-                        st.session_state.graph = rag.build_graph(
-                            llm=st.session_state.llm,
-                            vector_store=st.session_state.vector_store,
-                            k=st.session_state.retrieval_k
-                        )
-                        st.success(f"RAG updated with number of chunks={new_k}")
-                    except Exception as e:
-                        st.error(f"Error updating RAG: {str(e)}")
+                    st.session_state.graph = rag.build_graph(
+                        llm=st.session_state.llm,
+                        vector_store=st.session_state.vector_store,
+                        k=st.session_state.retrieval_k,
+                    )
+                    st.success(f"RAG updated with number of chunks={new_k}")
 
             # Batch Testing
             st.subheader("Batch Testing")
-            test_csv = st.file_uploader("Upload Test CSV", type="csv", disabled=not st.session_state.vector_store or not st.session_state.graph)
+            test_csv = st.file_uploader(
+                "Upload Test CSV",
+                type="csv",
+                disabled=not st.session_state.vector_store or not st.session_state.graph,
+            )
             if test_csv:
                 st.session_state.test_csv = test_csv
                 if st.button("Run Batch Test", disabled=not st.session_state.test_csv):
                     with st.spinner("Running batch test..."):
-                        try:
-                            results_csv = run_batch_test(st.session_state.test_csv, st.session_state.graph, st.session_state.vector_store)
-                            st.session_state.results_csv = results_csv
-                            st.success("Batch test completed.")
-                        except Exception as e:
-                            st.error(f"Error running batch test: {str(e)}")
+                        progress_bar = st.progress(0)
+                        progress_text = st.empty()
+                        
+                        results = []
+                        for current_query, total_queries, batch_results in run_batch_test(
+                            st.session_state.test_csv,
+                            st.session_state.graph,
+                            st.session_state.vector_store,
+                        ):
+                            results = batch_results
+                            progress = current_query / total_queries
+                            progress_bar.progress(min(progress, 1.0))
+                            progress_text.text(f"Processing query {current_query} of {total_queries}...")
+
+                        st.session_state.results_csv = pd.DataFrame(results).to_csv(index=False)
+                        progress_bar.empty()
+                        progress_text.empty()
+                        st.success("Batch test completed.")
             if st.session_state.results_csv:
                 st.download_button(
                     label="Download Results CSV",
                     data=st.session_state.results_csv,
                     file_name="test_results.csv",
                     mime="text/csv"
-                )
-
-            # Retrieval evaluation
-            st.subheader("Retrieval Evaluation")
-            test_csv = "retrieval_test_set.csv"
-            if st.button(
-                label="Run Retrieval Test",
-                disabled=True
-            ):
-                if not st.session_state.vector_store:
-                    st.error("Vector store not initialized. Update database first.")
-                else:
-                    try:
-                        from evaluate_retrieval import load_test_set, evaluate_retrieval
-                        test_df = load_test_set(test_csv)
-                        with st.spinner("Running retrieval test..."):
-                            results, total_time, retrieval_time = evaluate_retrieval(
-                                test_df, st.session_state.vector_store, k=st.session_state.retrieval_k
-                            )
-                        # Display results
-                        st.write(f"**Average Precision@{st.session_state.retrieval_k}**: {results['avg_precision']:.4f}")
-                        st.write(f"**Average Recall@{st.session_state.retrieval_k}**: {results['avg_recall']:.4f}")
-                        st.write(f"**Average MRR**: {results['avg_mrr']:.4f}")
-                        st.write(f"**Total Execution Time**: {total_time:.2f} seconds")
-                        st.write(f"**Retrieval Time**: {retrieval_time:.2f} seconds")
-                        st.write("**Per-query Results**:")
-                        for res in results["per_query_results"]:
-                            st.write(f"- **Query**: {res['query']}")
-                            st.write(f"  Precision: {res['precision']:.4f}, Recall: {res['recall']:.4f}, MRR: {res['mrr']:.4f}")
-                            st.write(f"  Retrieved IDs: {res['retrieved_ids']}")
-                            st.write(f"  Ground Truth IDs: {res['ground_truth_ids']}")
-                        # Store results for download
-                        st.session_state.retrieval_results = {
-                            "timestamp": datetime.now().isoformat(),
-                            "parameters": {
-                                "k": st.session_state.retrieval_k,
-                                "chunk_size": st.session_state.chunk_size,
-                                "chunk_overlap": st.session_state.chunk_overlap
-                            },
-                            "metrics": results,
-                            "total_time": total_time,
-                            "retrieval_time": retrieval_time
-                        }
-                    except Exception as e:
-                        st.error(f"Error running retrieval test: {str(e)}")
-
-            if "retrieval_results" in st.session_state:
-                results_json = json.dumps(st.session_state.retrieval_results, indent=2)
-                st.download_button(
-                    label="Download Retrieval Results",
-                    data=results_json,
-                    file_name=f"retrieval_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json"
                 )

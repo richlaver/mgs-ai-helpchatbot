@@ -6,7 +6,6 @@ store, LangGraph), and renders the chatbot interface for MissionOS queries.
 
 import streamlit as st
 
-import database
 import rag
 import session
 import setup
@@ -18,7 +17,7 @@ import logging
 
 
 def main() -> None:
-    """Initialize and run the MissionHelp Demo application."""
+    """Initializes and runs the MissionHelp Demo application."""
     st.set_page_config(
         page_title="MissionHelp Demo",
         page_icon=":material/support_agent:",
@@ -26,10 +25,10 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
     
-    # Initialize session state parameters
+    # Initialize session state
     session.setup_session()
 
-    # Ensure Playwright browsers
+    # Install Playwright browsers
     setup.install_playwright_browsers()
 
     # Configure core components

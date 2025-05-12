@@ -7,9 +7,12 @@ user input, and multimedia rendering (images, videos) for MissionOS queries.
 import base64
 import logging
 import re
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 
 import streamlit as st
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 
 # Configure logging for UI events and errors
@@ -22,12 +25,8 @@ logger = logging.getLogger(__name__)
 
 
 def render_chatbot() -> None:
-    """Render the chatbot interface and handle user interactions.
-
-    Displays chat history, processes user queries, and renders responses with
-    images and videos using the LangGraph workflow from rag.py.
-    """
-    # Apply custom CSS and JavaScript for styling and auto-scrolling
+    """Renders the chatbot interface and processes user interactions."""
+    # Apply custom CSS and JavaScript
     st.markdown(
         """
         <style>
@@ -74,196 +73,143 @@ def render_chatbot() -> None:
                 st.markdown(msg.content)
         elif isinstance(msg, AIMessage):
             with st.chat_message("assistant"):
-                if (
-                    "tool_calls" in msg.additional_kwargs
-                    and msg.additional_kwargs["tool_calls"]
-                ):
+                if "tool_calls" in msg.additional_kwargs and msg.additional_kwargs["tool_calls"]:
                     st.markdown(f"{msg.content} (Calling tool...)")
                 else:
-                    # Process message content
                     content = msg.content
-                    images = getattr(msg, "images", st.session_state.images)
-                    videos = getattr(msg, "videos", st.session_state.videos)
+                    images = msg.additional_kwargs.get("images", [])
+                    videos = msg.additional_kwargs.get("videos", [])
 
-                    # Split content into numbered list items or sentences
-                    pattern = r"((?:[0-9]+\.\s+[^\n]*?(?=(?:[0-9]+\.\s+|\Z)))|[^\n]+)"
-                    segments = re.findall(pattern, content, re.DOTALL)
+                    segments = re.findall(r"((?:[0-9]+\.\s+[^\n]*?(?=(?:[0-9]+\.\s+|\Z)))|[^\n]+)", content, re.DOTALL)
                     for segment in segments:
                         segment = segment.strip()
                         if not segment:
                             continue
 
-                        # Extract and remove image references
                         image_refs = re.findall(r"\[Image (\d+)\]", segment)
                         cleaned_segment = re.sub(r"\[Image (\d+)\]\s*", "", segment)
-                        # Normalize spacing before punctuation
                         cleaned_segment = re.sub(r"\s+([.!?])", r"\1", cleaned_segment)
                         if cleaned_segment.strip():
                             st.markdown(cleaned_segment)
 
-                        # Render images
                         for ref in image_refs:
                             idx = int(ref) - 1
                             if 0 <= idx < len(images):
-                                try:
-                                    caption = images[idx].get("caption", "")
-                                    cleaned_caption = re.sub(
-                                        r"^Figure \d+:\s*", "", caption
-                                    )
-                                    st.image(
-                                        base64.b64decode(images[idx]["base64"]),
-                                        caption=(
-                                            cleaned_caption
-                                            if cleaned_caption.strip()
-                                            else None
-                                        ),
-                                        use_container_width=True,
-                                        output_format="auto",
-                                        clamp=True,
-                                        channels="RGB",
-                                    )
-                                except Exception as e:
-                                    logger.error(f"Image render error: {str(e)}")
-
-                    # Render videos
-                    if videos:
-                        logger.info(f"Rendering videos: {videos}")
-                        for video in videos:
-                            try:
-                                st.markdown(
-                                    f"**Video**: [{video['title']}]({video['url']})"
+                                caption = images[idx].get("caption", "")
+                                cleaned_caption = re.sub(r"^Figure \d+:\s*", "", caption)
+                                st.image(
+                                    base64.b64decode(images[idx]["base64"]),
+                                    caption=cleaned_caption if cleaned_caption.strip() else None,
+                                    use_container_width=True,
+                                    output_format="auto",
+                                    clamp=True,
+                                    channels="RGB",
                                 )
-                                st.video(video["url"])
-                            except Exception as e:
-                                logger.error(f"Video render error: {str(e)}")
+
+                    for video in videos:
+                        st.markdown(f"**Video**: [{video['title']}]({video['url']})")
+                        st.video(video["url"])
 
     st.markdown("</div>", unsafe_allow_html=True)
 
     # Handle user input
-    question = st.chat_input(placeholder="Ask a question about MissionOS:")
-    if question:
+    if question := st.chat_input(placeholder="Ask a question about MissionOS:"):
         st.session_state.images = []
         st.session_state.videos = []
-
-        # Add user message to history
         user_message = HumanMessage(content=question)
         st.session_state.messages.append(user_message)
         with st.chat_message("user"):
             st.markdown(question)
 
-        # Prepare graph execution
         config = {"configurable": {"thread_id": f"{st.session_state.thread_id}"}}
-        system_prompt = SystemMessage(
-            content=(
-                "You are an assistant for MissionOS, a platform for managing instruments and data. "
-                "Use the 'retrieve' tool for any ambiguous, general, or info-seeking queries about MissionOS. "
-                "Only respond directly without tools for simple greetings or clear non-info requests."
-            )
-        )
         initial_state = {
-            "messages": [system_prompt, user_message],
+            "messages": [user_message],
             "images": [],
             "videos": [],
-            "timings": []
+            "timings": [],
         }
 
-        # Process query with LangGraph
         with st.spinner("Generating..."):
-            try:
-                for step in st.session_state.graph.stream(
-                    initial_state,
-                    stream_mode="values",
-                    config=config,
-                ):
-                    new_messages = [
-                        msg for msg in step["messages"]
-                        if msg not in st.session_state.messages
-                    ]
-                    if "videos" in step:
-                        st.session_state.videos = step["videos"]
-                    if "images" in step:
-                        st.session_state.images = step["images"]
-                    for msg in new_messages:
-                        st.session_state.messages.append(msg)
-                        if (
-                            isinstance(msg, AIMessage)
-                            and not (
-                                "tool_calls" in msg.additional_kwargs
-                                and msg.additional_kwargs["tool_calls"]
-                            )
-                        ):
-                            with st.chat_message("assistant"):
-                                # Process response content
+            for step in st.session_state.graph.stream(initial_state, stream_mode="values", config=config):
+                # Render new AI messages incrementally
+                new_messages = [msg for msg in step["messages"] if msg not in st.session_state.messages]
+                for msg in new_messages:
+                    st.session_state.messages.append(msg)
+                    if isinstance(msg, AIMessage):
+                        with st.chat_message("assistant"):
+                            if "tool_calls" in msg.additional_kwargs and msg.additional_kwargs["tool_calls"]:
+                                st.markdown(f"{msg.content} (Calling tool...)")
+                            else:
                                 content = msg.content
-                                images = getattr(msg, "images", st.session_state.images)
-                                videos = getattr(msg, "videos", st.session_state.videos)
+                                images = msg.additional_kwargs.get("images", [])
+                                videos = msg.additional_kwargs.get("videos", [])
 
-                                # Split content into segments
-                                pattern = r"((?:[0-9]+\.\s+[^\n]*?(?=(?:[0-9]+\.\s+|\Z)))|[^\n]+)"
-                                segments = re.findall(pattern, content, re.DOTALL)
+                                segments = re.findall(
+                                    r"((?:[0-9]+\.\s+[^\n]*?(?=(?:[0-9]+\.\s+|\Z)))|[^\n]+)", content, re.DOTALL
+                                )
                                 for segment in segments:
                                     segment = segment.strip()
                                     if not segment:
                                         continue
 
-                                    # Extract and remove image references
                                     image_refs = re.findall(r"\[Image (\d+)\]", segment)
-                                    cleaned_segment = re.sub(
-                                        r"\[Image (\d+)\]\s*", "", segment
-                                    )
-                                    cleaned_segment = re.sub(
-                                        r"\s+([.!?])", r"\1", cleaned_segment
-                                    )
+                                    cleaned_segment = re.sub(r"\[Image (\d+)\]\s*", "", segment)
+                                    cleaned_segment = re.sub(r"\s+([.!?])", r"\1", cleaned_segment)
                                     if cleaned_segment.strip():
                                         st.markdown(cleaned_segment)
 
-                                    # Render images
                                     for ref in image_refs:
                                         idx = int(ref) - 1
                                         if 0 <= idx < len(images):
-                                            try:
-                                                caption = images[idx].get("caption", "")
-                                                cleaned_caption = re.sub(
-                                                    r"^Figure \d+:\s*", "", caption
-                                                )
-                                                st.image(
-                                                    base64.b64decode(images[idx]["base64"]),
-                                                    caption=(
-                                                        cleaned_caption
-                                                        if cleaned_caption.strip()
-                                                        else None
-                                                    ),
-                                                    use_container_width=True,
-                                                    output_format="auto",
-                                                    clamp=True,
-                                                    channels="RGB",
-                                                )
-                                            except Exception as e:
-                                                logger.error(f"Image render error: {str(e)}")
-
-                                # Render videos
-                                if videos:
-                                    logger.info(f"Rendering videos: {videos}")
-                                    for video in videos:
-                                        try:
-                                            st.markdown(
-                                                f"**Video**: [{video['title']}]({video['url']})"
+                                            caption = images[idx].get("caption", "")
+                                            cleaned_caption = re.sub(r"^Figure \d+:\s*", "", caption)
+                                            st.image(
+                                                base64.b64decode(images[idx]["base64"]),
+                                                caption=cleaned_caption if cleaned_caption.strip() else None,
+                                                use_container_width=True,
+                                                output_format="auto",
+                                                clamp=True,
+                                                channels="RGB",
                                             )
-                                            st.video(video["url"])
-                                        except Exception as e:
-                                            logger.error(f"Video render error: {str(e)}")
-                    final_state = step
 
-                # Display latency details
-                if final_state:
+                                for video in videos:
+                                    st.markdown(f"**Video**: [{video['title']}]({video['url']})")
+                                    st.video(video["url"])
+
+                final_state = step
+
+            if final_state:
+                with st.expander("Latency Details", expanded=True):
                     timings = final_state.get("timings", [])
-                    with st.expander("Latency Details", expanded=True):
-                        for timing in timings:
-                            st.write(f"{timing['component']}: {timing['time']:.2f} seconds")
+                    total_latency = sum(timing["time"] for timing in timings)
+                    
+                    latency_data = [
+                        {
+                            "Component": timing["component"],
+                            "Latency (s)": f"{timing['time']:.2f}",
+                            "Percentage (%)": f"{(timing['time'] / total_latency * 100):.0f}" if total_latency > 0 else "0"
+                        }
+                        for timing in timings
+                    ]
+                    
+                    df = pd.DataFrame(latency_data)
+                    
+                    st.markdown(f"**Total Latency: {total_latency:.2f} seconds**")
+                    
+                    st.dataframe(
+                        df,
+                        use_container_width=True,
+                        hide_index=True
+                    )
 
-            except Exception as e:
-                logger.error(f"Graph streaming error: {str(e)}")
-                st.error(f"Failed to generate response: {str(e)}")
+                    if timings and total_latency > 0:
+                        fig, ax = plt.subplots()
+                        components = [timing["component"] for timing in timings]
+                        percentages = [(timing["time"] / total_latency * 100) for timing in timings]
+                        pastel_colors = cm.Pastel1(range(len(components)))
+                        ax.pie(percentages, labels=components, autopct='%1.0f%%', startangle=90, colors=pastel_colors)
+                        ax.axis('equal')
+                        st.pyplot(fig)
+                        plt.close(fig)
 
-        # Auto-scroll to latest message
         st.markdown('<script>scrollToBottom();</script>', unsafe_allow_html=True)
