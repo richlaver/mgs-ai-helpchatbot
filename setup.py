@@ -11,6 +11,8 @@ import pandas as pd
 import streamlit as st
 from langchain_google_vertexai import VertexAIEmbeddings
 from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_vertexai import ChatVertexAI
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
@@ -47,15 +49,19 @@ def get_llm() -> ChatOpenAI:
     Returns:
         A ChatOpenAI instance configured with xAI API.
     """
-    st.session_state.status.write(":material/emoji_objects: Setting up the Grok 3 Beta LLM...")
-    return ChatOpenAI(
-        model="grok-3-beta",
-        api_key=st.secrets.xai_api_key,
-        base_url="https://api.x.ai/v1",
-        temperature=0.3,
-        top_p=0.5,
-        frequency_penalty=0.5,
-        presence_penalty=0.5,
+    # st.session_state.status.write(":material/emoji_objects: Setting up the Grok 3 Beta LLM...")
+    # return ChatOpenAI(
+    #     model="grok-3-beta",
+    #     api_key=st.secrets.xai_api_key,
+    #     base_url="https://api.x.ai/v1",
+    #     temperature=0.3,
+    #     top_p=0.5,
+    #     frequency_penalty=0.5,
+    #     presence_penalty=0.5,
+    # )
+    st.session_state.status.write(":material/emoji_objects: Setting up the Gemini 2.0 Flash LLM...")
+    return ChatVertexAI(
+        model="gemini-2.0-flash-001"
     )
 
 
